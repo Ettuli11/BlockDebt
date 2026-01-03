@@ -1130,4 +1130,4 @@ console.log('📍 Ambiente:', process.env.NODE_ENV || 'development');
 client.login(CONFIG.TOKEN).catch(error => {
     console.error('❌ Login fallito:', error);
     process.exit(1);
-});
+})
