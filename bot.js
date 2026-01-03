@@ -7,7 +7,7 @@ const db = new Database('blockdebt.db');
 
 // ==================== CONFIGURAZIONE ====================
 const CONFIG = {
-    TOKEN: process.env.DISCORD_TOKEN
+    TOKEN: process.env.DISCORD_TOKEN,
     PRESTITI_CHANNEL_ID: '1456768128880082995',
     HOLIDAYS: [] // Array di date in formato 'YYYY-MM-DD' per le festività
 };
