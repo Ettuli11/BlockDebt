@@ -40,6 +40,8 @@ build/Release
 
 # Dependency directories
 node_modules/
+   .env
+   *.db
 jspm_packages/
 
 # Snowpack dependency directory (https://snowpack.dev/)
@@ -136,4 +138,35 @@ dist
 .pnp.*
 
 blockdebt.db
+
+# BlockDebt - File da NON committare
+*.db
+*.sqlite
+*.sqlite3
+config.json
+secrets.json
+.env.backup
+*.bak
+*.backup
+
+# ==================== BLOCKDEBT SPECIFIC ====================
+# Database files (SQLite - non più usato in prod ma utile per test locali)
+*.db
+*.sqlite
+*.sqlite3
+blockdebt.db
+
+# Configurazioni sensibili
+config.json
+secrets.json
+.env.backup
+
+# Backup files
+*.bak
+*.backup
+
+# IDE specifici
+.vscode/
+.idea/
+*.swp
 

@@ -1,24 +1,42 @@
 // BlockDebt - Bot Discord per gestione prestiti Minecraft
-// Requisiti: npm install discord.js better-sqlite3
+// Con Express per Render Free Web Service
 
+const express = require('express');
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType } = require('discord.js');
 const Database = require('better-sqlite3');
-const db = new Database('blockdebt.db');
 
-// ==================== CONFIGURAZIONE ====================
-const CONFIG = {
-    TOKEN: process.env.DISCORD_TOKEN,
-    PRESTITI_CHANNEL_ID: process.env.CHANNEL_ID || '1456768128880082995',
-    HOLIDAYS: [] // Array di date in formato 'YYYY-MM-DD'
-};
+// ==================== EXPRESS SERVER (per Render) ====================
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-// Validazione configurazione
-if (!CONFIG.TOKEN) {
-    console.error('❌ DISCORD_TOKEN mancante! Configura la variabile d\'ambiente.');
-    process.exit(1);
-}
+let botReady = false;
+let botUser = null;
+
+app.get('/', (req, res) => {
+    res.json({
+        status: 'online',
+        bot: botReady ? 'connected' : 'connecting',
+        username: botUser ? botUser.tag : 'N/A',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/health', (req, res) => {
+    if (botReady) {
+        res.status(200).json({ status: 'healthy', bot: botUser.tag });
+    } else {
+        res.status(503).json({ status: 'starting' });
+    }
+});
+
+const server = app.listen(PORT, () => {
+    console.log(`🌐 Server HTTP attivo su porta ${PORT}`);
+});
 
 // ==================== DATABASE ====================
+const db = new Database('blockdebt.db');
+
 db.exec(`
     CREATE TABLE IF NOT EXISTS prestiti (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,6 +68,18 @@ db.exec(`
         FOREIGN KEY (prestito_id) REFERENCES prestiti(id)
     )
 `);
+
+// ==================== CONFIGURAZIONE ====================
+const CONFIG = {
+    TOKEN: process.env.DISCORD_TOKEN,
+    PRESTITI_CHANNEL_ID: process.env.CHANNEL_ID || '1456768128880082995',
+    HOLIDAYS: []
+};
+
+if (!CONFIG.TOKEN) {
+    console.error('❌ DISCORD_TOKEN mancante!');
+    process.exit(1);
+}
 
 // ==================== UTILITÀ ====================
 function formattaNumero(num) {
@@ -112,7 +142,6 @@ function calcolaIncrementi(prestito) {
     }
 }
 
-// Gestione sicura risposta interazioni
 async function safeReply(interaction, options) {
     try {
         if (interaction.replied || interaction.deferred) {
@@ -120,7 +149,7 @@ async function safeReply(interaction, options) {
         }
         return await interaction.reply(options);
     } catch (error) {
-        console.error('Errore risposta interazione:', error.message);
+        console.error('Errore risposta:', error.message);
         return null;
     }
 }
@@ -129,7 +158,7 @@ async function safeUpdate(interaction, options) {
     try {
         return await interaction.update(options);
     } catch (error) {
-        console.error('Errore update interazione:', error.message);
+        console.error('Errore update:', error.message);
         return await safeReply(interaction, options);
     }
 }
@@ -146,13 +175,7 @@ function creaEmbedPrestito(prestito, guild) {
         importoVisualizzato = prestitoAggiornato.importo_attuale;
     }
     
-    const emoji = {
-        'Soldi': '💰',
-        'Item': '📦',
-        'Kill': '☠',
-        'Info': 'ℹ'
-    };
-    
+    const emoji = { 'Soldi': '💰', 'Item': '📦', 'Kill': '☠', 'Info': 'ℹ' };
     const stati = {
         'attesa': '🟡 IN ATTESA DI ACCETTAZIONE',
         'declinato': '❌ DECLINATO',
@@ -181,56 +204,49 @@ function creaEmbedPrestito(prestito, guild) {
     return embed;
 }
 
-// ==================== BOT ====================
+// ==================== BOT DISCORD ====================
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages
-    ]
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
 
-// Evento ready corretto (clientReady è preferito ma ready funziona ancora)
 client.once('ready', async () => {
-    console.log(`✅ BlockDebt online come ${client.user.tag}`);
-    console.log(`📊 Server: ${client.guilds.cache.size}`);
+    botReady = true;
+    botUser = client.user;
+    console.log(`✅ ${client.user.tag} online`);
+    console.log(`📊 ${client.guilds.cache.size} server`);
     
-    // Verifica canale prestiti
     try {
         const channel = await client.channels.fetch(CONFIG.PRESTITI_CHANNEL_ID);
         if (channel) {
-            console.log(`✅ Canale prestiti trovato: #${channel.name}`);
+            console.log(`✅ Canale: #${channel.name}`);
             
-            // Invia messaggio iniziale solo se vuoto
             const messages = await channel.messages.fetch({ limit: 10 });
-            const hasInitMessage = messages.some(m => 
+            const hasInit = messages.some(m => 
                 m.author.id === client.user.id && 
-                m.embeds.length > 0 && 
-                m.embeds[0].title === '📄 Prestiti'
+                m.embeds[0]?.title === '📄 Prestiti'
             );
             
-            if (!hasInitMessage) {
+            if (!hasInit) {
                 const embed = new EmbedBuilder()
                     .setColor('#0099ff')
                     .setTitle('📄 Prestiti')
                     .setDescription('Scegli una categoria per avviare un prestito');
                 
-                const row = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder().setCustomId('cat_soldi').setLabel('Soldi').setEmoji('💰').setStyle(ButtonStyle.Primary),
-                        new ButtonBuilder().setCustomId('cat_item').setLabel('Item').setEmoji('📦').setStyle(ButtonStyle.Primary),
-                        new ButtonBuilder().setCustomId('cat_kill').setLabel('Kill').setEmoji('☠').setStyle(ButtonStyle.Primary),
-                        new ButtonBuilder().setCustomId('cat_info').setLabel('Info').setEmoji('ℹ').setStyle(ButtonStyle.Primary)
-                    );
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('cat_soldi').setLabel('Soldi').setEmoji('💰').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId('cat_item').setLabel('Item').setEmoji('📦').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId('cat_kill').setLabel('Kill').setEmoji('☠').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId('cat_info').setLabel('Info').setEmoji('ℹ').setStyle(ButtonStyle.Primary)
+                );
                 
                 await channel.send({ embeds: [embed], components: [row] });
                 console.log('✅ Messaggio iniziale inviato');
             }
         }
     } catch (error) {
-        console.error('❌ Errore accesso canale:', error.message);
+        console.error('❌ Errore canale:', error.message);
     }
     
-    // Timer incrementi giornalieri
     setInterval(async () => {
         try {
             const prestitiAttivi = db.prepare('SELECT * FROM prestiti WHERE stato = ?').all('attivo');
@@ -241,28 +257,21 @@ client.once('ready', async () => {
                     if (thread) {
                         const messages = await thread.messages.fetch({ limit: 1 });
                         const firstMsg = messages.first();
-                        if (firstMsg && firstMsg.author.id === client.user.id) {
+                        if (firstMsg?.author.id === client.user.id) {
                             const embed = creaEmbedPrestito(prestito, thread.guild);
                             await firstMsg.edit({ embeds: [embed] });
                         }
                     }
-                } catch (err) {
-                    console.error(`Thread ${prestito.thread_id} non trovato`);
-                }
+                } catch (err) {}
             }
         } catch (error) {
-            console.error('Errore timer incrementi:', error);
+            console.error('Errore timer:', error);
         }
-    }, 3600000); // Ogni ora
-    
-    // Keep-alive per Render
-    console.log('🔄 Bot attivo e in ascolto...');
+    }, 3600000);
 });
 
-// ==================== GESTIONE INTERAZIONI ====================
 client.on('interactionCreate', async interaction => {
     try {
-        // PULSANTI CATEGORIA
         if (interaction.isButton() && interaction.customId.startsWith('cat_')) {
             const categoria = interaction.customId.replace('cat_', '');
             const categoriaNome = categoria.charAt(0).toUpperCase() + categoria.slice(1);
@@ -271,55 +280,49 @@ client.on('interactionCreate', async interaction => {
                 .setCustomId(`modal_${categoria}`)
                 .setTitle(`Crea Prestito - ${categoriaNome}`);
             
-            const mittenteInput = new TextInputBuilder()
-                .setCustomId('mittente')
-                .setLabel('Mittente (chi presta)')
-                .setStyle(TextInputStyle.Short)
-                .setValue(interaction.user.username)
-                .setRequired(true);
-            
-            const debitoreInput = new TextInputBuilder()
-                .setCustomId('debitore')
-                .setLabel('Debitore (chi deve pagare)')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true);
-            
-            let importoLabel = 'Importo';
-            if (categoria === 'item') importoLabel = 'Item (nome e quantità)';
-            else if (categoria === 'kill') importoLabel = 'Kill (numero)';
-            else if (categoria === 'info') importoLabel = 'Info (testo)';
-            
-            const importoInput = new TextInputBuilder()
-                .setCustomId('importo')
-                .setLabel(importoLabel)
-                .setStyle(categoria === 'info' ? TextInputStyle.Paragraph : TextInputStyle.Short)
-                .setRequired(true);
-            
-            const proveInput = new TextInputBuilder()
-                .setCustomId('prove')
-                .setLabel('Prove (facoltative) - immagine o link')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(false);
-            
-            const dataInput = new TextInputBuilder()
-                .setCustomId('data')
-                .setLabel('Data (default: oggi)')
-                .setStyle(TextInputStyle.Short)
-                .setValue(new Date().toLocaleDateString('it-IT'))
-                .setRequired(false);
-            
             modal.addComponents(
-                new ActionRowBuilder().addComponents(mittenteInput),
-                new ActionRowBuilder().addComponents(debitoreInput),
-                new ActionRowBuilder().addComponents(importoInput),
-                new ActionRowBuilder().addComponents(proveInput),
-                new ActionRowBuilder().addComponents(dataInput)
+                new ActionRowBuilder().addComponents(
+                    new TextInputBuilder()
+                        .setCustomId('mittente')
+                        .setLabel('Mittente (chi presta)')
+                        .setStyle(TextInputStyle.Short)
+                        .setValue(interaction.user.username)
+                        .setRequired(true)
+                ),
+                new ActionRowBuilder().addComponents(
+                    new TextInputBuilder()
+                        .setCustomId('debitore')
+                        .setLabel('Debitore (chi deve pagare)')
+                        .setStyle(TextInputStyle.Short)
+                        .setRequired(true)
+                ),
+                new ActionRowBuilder().addComponents(
+                    new TextInputBuilder()
+                        .setCustomId('importo')
+                        .setLabel(categoria === 'item' ? 'Item (nome e quantità)' : categoria === 'kill' ? 'Kill (numero)' : categoria === 'info' ? 'Info (testo)' : 'Importo')
+                        .setStyle(categoria === 'info' ? TextInputStyle.Paragraph : TextInputStyle.Short)
+                        .setRequired(true)
+                ),
+                new ActionRowBuilder().addComponents(
+                    new TextInputBuilder()
+                        .setCustomId('prove')
+                        .setLabel('Prove (facoltative)')
+                        .setStyle(TextInputStyle.Short)
+                        .setRequired(false)
+                ),
+                new ActionRowBuilder().addComponents(
+                    new TextInputBuilder()
+                        .setCustomId('data')
+                        .setLabel('Data (default: oggi)')
+                        .setStyle(TextInputStyle.Short)
+                        .setValue(new Date().toLocaleDateString('it-IT'))
+                        .setRequired(false)
+                )
             );
             
             await interaction.showModal(modal);
         }
         
-        // SUBMIT MODALE
         if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_')) {
             await interaction.deferReply({ ephemeral: true });
             
@@ -347,7 +350,6 @@ client.on('interactionCreate', async interaction => {
                 importoNum = importoRaw;
             }
             
-            // Cerca debitore
             const members = await interaction.guild.members.fetch({ query: debitore, limit: 1 });
             let debitoreId = null;
             let debitoreNome = debitore;
@@ -358,30 +360,19 @@ client.on('interactionCreate', async interaction => {
                 debitoreNome = member.user.username;
             }
             
-            // Crea prestito
             const result = db.prepare(`
                 INSERT INTO prestiti (mittente_id, mittente_nome, debitore_id, debitore_nome, categoria, 
                     importo_originale, importo_attuale, valore_reale, prove, data_creazione, stato, thread_id, guild_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `).run(
-                interaction.user.id,
-                mittente,
-                debitoreId || 'unknown',
-                debitoreNome,
-                categoriaNome,
+                interaction.user.id, mittente, debitoreId || 'unknown', debitoreNome, categoriaNome,
                 typeof importoNum === 'number' ? importoNum : 0,
                 typeof importoNum === 'number' ? importoNum : 0,
                 typeof importoNum === 'number' ? importoNum : null,
-                prove,
-                data,
-                'attesa',
-                'temp',
-                interaction.guild.id
+                prove, data, 'attesa', 'temp', interaction.guild.id
             );
             
             const prestitoId = result.lastInsertRowid;
-            
-            // Crea thread
             const threadName = `prestito-${prestitoId}-${debitoreNome}-${categoria}`;
             const thread = await interaction.channel.threads.create({
                 name: threadName,
@@ -394,204 +385,141 @@ client.on('interactionCreate', async interaction => {
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
             const embed = creaEmbedPrestito(prestito, interaction.guild);
             
-            const row1 = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder().setCustomId(`accetta_${prestitoId}`).setLabel('Accetta prestito').setEmoji('✅').setStyle(ButtonStyle.Success),
-                    new ButtonBuilder().setCustomId(`declina_${prestitoId}`).setLabel('Declina prestito').setEmoji('❌').setStyle(ButtonStyle.Danger)
-                );
+            const row1 = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`accetta_${prestitoId}`).setLabel('Accetta').setEmoji('✅').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId(`declina_${prestitoId}`).setLabel('Declina').setEmoji('❌').setStyle(ButtonStyle.Danger)
+            );
             
-            const row2 = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder().setCustomId(`chiudi_${prestitoId}`).setLabel('Chiudi').setEmoji('🔒').setStyle(ButtonStyle.Secondary)
-                );
+            const row2 = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`chiudi_${prestitoId}`).setLabel('Chiudi').setEmoji('🔒').setStyle(ButtonStyle.Secondary)
+            );
             
             await thread.send({ embeds: [embed], components: [row1, row2] });
-            
             if (debitoreId) await thread.members.add(debitoreId);
             await thread.members.add(interaction.user.id);
             
             await interaction.editReply({ content: `✅ Prestito #${prestitoId} creato! ${thread}` });
         }
         
-        // CHIUDI THREAD
         if (interaction.isButton() && interaction.customId.startsWith('chiudi_')) {
             const prestitoId = interaction.customId.split('_')[1];
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-
-            if (!prestito) return safeReply(interaction, { content: '❌ Prestito non trovato!', ephemeral: true });
+            if (!prestito) return safeReply(interaction, { content: '❌ Non trovato!', ephemeral: true });
             if (interaction.user.id !== prestito.mittente_id) {
-                return safeReply(interaction, { content: '❌ Solo il mittente può chiudere.', ephemeral: true });
+                return safeReply(interaction, { content: '❌ Solo mittente!', ephemeral: true });
             }
-
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId(`conferma_chiudi_${prestitoId}`).setLabel('Sì').setEmoji('✅').setStyle(ButtonStyle.Danger),
-                new ButtonBuilder().setCustomId(`annulla_chiudi_${prestitoId}`).setLabel('No').setEmoji('❌').setStyle(ButtonStyle.Secondary)
+                new ButtonBuilder().setCustomId(`conferma_chiudi_${prestitoId}`).setLabel('Sì').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId(`annulla_chiudi_${prestitoId}`).setLabel('No').setStyle(ButtonStyle.Secondary)
             );
-
-            await safeReply(interaction, {
-                content: '⚠️ Confermi chiusura prestito?',
-                components: [row],
-                ephemeral: true
-            });
+            await safeReply(interaction, { content: '⚠️ Confermi chiusura?', components: [row], ephemeral: true });
         }
 
         if (interaction.isButton() && interaction.customId.startsWith('conferma_chiudi_')) {
             const prestitoId = interaction.customId.split('_')[2];
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-
             if (!prestito || interaction.user.id !== prestito.mittente_id) {
                 return safeUpdate(interaction, { content: '❌ Non autorizzato.', components: [] });
             }
-
             db.prepare('UPDATE prestiti SET stato = ? WHERE id = ?').run('completato', prestitoId);
-            await safeUpdate(interaction, { content: '🔒 Prestito chiuso.', components: [] });
-
+            await safeUpdate(interaction, { content: '🔒 Chiuso.', components: [] });
             try {
                 const thread = await client.channels.fetch(prestito.thread_id);
                 if (thread) {
                     await thread.setArchived(true);
-                    setTimeout(() => thread.delete('Chiuso da mittente').catch(() => {}), 3000);
+                    setTimeout(() => thread.delete().catch(() => {}), 3000);
                 }
-            } catch (err) {
-                console.error('Errore chiusura thread:', err.message);
-            }
+            } catch (err) {}
         }
 
         if (interaction.isButton() && interaction.customId.startsWith('annulla_chiudi_')) {
             await safeUpdate(interaction, { content: '⏎ Annullato.', components: [] });
         }
         
-        // ACCETTA PRESTITO
         if (interaction.isButton() && interaction.customId.startsWith('accetta_')) {
             const prestitoId = interaction.customId.split('_')[1];
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-            
-            if (!prestito) return safeReply(interaction, { content: '❌ Prestito non trovato!', ephemeral: true });
+            if (!prestito) return safeReply(interaction, { content: '❌ Non trovato!', ephemeral: true });
             if (prestito.debitore_id !== 'unknown' && interaction.user.id !== prestito.debitore_id) {
-                return safeReply(interaction, { content: '❌ Solo il debitore può accettare!', ephemeral: true });
+                return safeReply(interaction, { content: '❌ Solo debitore!', ephemeral: true });
             }
-            
             db.prepare('UPDATE prestiti SET stato = ?, data_accettazione = ?, ultimo_incremento = ? WHERE id = ?')
                 .run('attivo', new Date().toISOString(), new Date().toISOString(), prestitoId);
-            
             const embed = creaEmbedPrestito(prestito, interaction.guild);
-            
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder().setCustomId(`paga_${prestitoId}`).setLabel('Paga parzialmente').setEmoji('💸').setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder().setCustomId(`completa_${prestitoId}`).setLabel('Segna pagato').setEmoji('✅').setStyle(ButtonStyle.Success)
-                );
-            
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`paga_${prestitoId}`).setLabel('Paga').setEmoji('💸').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId(`completa_${prestitoId}`).setLabel('Pagato').setEmoji('✅').setStyle(ButtonStyle.Success)
+            );
             await safeUpdate(interaction, { embeds: [embed], components: [row] });
         }
         
-        // DECLINA PRESTITO
         if (interaction.isButton() && interaction.customId.startsWith('declina_')) {
             const prestitoId = interaction.customId.split('_')[1];
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-            
-            if (!prestito) return safeReply(interaction, { content: '❌ Prestito non trovato!', ephemeral: true });
+            if (!prestito) return safeReply(interaction, { content: '❌ Non trovato!', ephemeral: true });
             if (prestito.debitore_id !== 'unknown' && interaction.user.id !== prestito.debitore_id) {
-                return safeReply(interaction, { content: '❌ Solo il debitore può declinare!', ephemeral: true });
+                return safeReply(interaction, { content: '❌ Solo debitore!', ephemeral: true });
             }
-            
             db.prepare('UPDATE prestiti SET stato = ? WHERE id = ?').run('declinato', prestitoId);
-            
             const embed = creaEmbedPrestito(prestito, interaction.guild);
             await safeUpdate(interaction, { embeds: [embed], components: [] });
-            
             try {
                 const mittente = await client.users.fetch(prestito.mittente_id);
-                await mittente.send(`⚠️ Prestito #${prestitoId} declinato da ${prestito.debitore_nome}`);
-            } catch (err) {
-                console.error('Impossibile DM mittente');
-            }
-            
+                await mittente.send(`⚠️ Prestito #${prestitoId} declinato`);
+            } catch (err) {}
             try {
                 const thread = await client.channels.fetch(prestito.thread_id);
                 await thread.setArchived(true);
             } catch (err) {}
         }
         
-        // PAGA PARZIALMENTE
         if (interaction.isButton() && interaction.customId.startsWith('paga_')) {
             const prestitoId = interaction.customId.split('_')[1];
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-            
-            if (!prestito) return safeReply(interaction, { content: '❌ Prestito non trovato!', ephemeral: true });
+            if (!prestito) return safeReply(interaction, { content: '❌ Non trovato!', ephemeral: true });
             if (prestito.debitore_id !== 'unknown' && interaction.user.id !== prestito.debitore_id) {
-                return safeReply(interaction, { content: '❌ Solo il debitore può pagare!', ephemeral: true });
+                return safeReply(interaction, { content: '❌ Solo debitore!', ephemeral: true });
             }
-            
-            const modal = new ModalBuilder()
-                .setCustomId(`paga_modal_${prestitoId}`)
-                .setTitle('Pagamento Parziale');
-            
-            const importoInput = new TextInputBuilder()
-                .setCustomId('importo')
-                .setLabel('Importo da pagare')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true);
-            
-            modal.addComponents(new ActionRowBuilder().addComponents(importoInput));
+            const modal = new ModalBuilder().setCustomId(`paga_modal_${prestitoId}`).setTitle('Pagamento');
+            modal.addComponents(new ActionRowBuilder().addComponents(
+                new TextInputBuilder().setCustomId('importo').setLabel('Importo').setStyle(TextInputStyle.Short).setRequired(true)
+            ));
             await interaction.showModal(modal);
         }
         
-        // SUBMIT PAGAMENTO
         if (interaction.isModalSubmit() && interaction.customId.startsWith('paga_modal_')) {
             await interaction.deferReply();
-            
             const prestitoId = interaction.customId.split('_')[2];
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-            
             calcolaIncrementi(prestito);
             const prestitoAggiornato = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-            
             const importoRaw = interaction.fields.getTextInputValue('importo');
             const importo = parseNumero(importoRaw);
-            
-            if (!importo || importo <= 0) {
-                return interaction.editReply({ content: '❌ Importo non valido!' });
-            }
-            
+            if (!importo || importo <= 0) return interaction.editReply({ content: '❌ Importo non valido!' });
             let importoAttuale = prestitoAggiornato.importo_attuale;
             if (prestitoAggiornato.categoria === 'Item' || prestitoAggiornato.categoria === 'Kill') {
                 importoAttuale = arrotondaItem(prestitoAggiornato.valore_reale || prestitoAggiornato.importo_attuale);
             }
-            
-            if (importo > importoAttuale) {
-                return interaction.editReply({ content: `❌ Massimo: ${formattaNumero(importoAttuale)}!` });
-            }
-            
+            if (importo > importoAttuale) return interaction.editReply({ content: `❌ Max: ${formattaNumero(importoAttuale)}!` });
             db.prepare('INSERT INTO pagamenti (prestito_id, importo, data) VALUES (?, ?, ?)')
                 .run(prestitoId, importo, new Date().toISOString());
-            
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder().setCustomId(`conferma_paga_${prestitoId}_${importo}`).setLabel('Conferma').setStyle(ButtonStyle.Success),
-                    new ButtonBuilder().setCustomId(`rifiuta_paga_${prestitoId}`).setLabel('Rifiuta').setStyle(ButtonStyle.Danger)
-                );
-            
-            await interaction.editReply({ 
-                content: `💸 Pagamento ${formattaNumero(importo)}.\n<@${prestito.mittente_id}> confermi?`,
-                components: [row]
-            });
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`conferma_paga_${prestitoId}_${importo}`).setLabel('Conferma').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId(`rifiuta_paga_${prestitoId}`).setLabel('Rifiuta').setStyle(ButtonStyle.Danger)
+            );
+            await interaction.editReply({ content: `💸 ${formattaNumero(importo)}. <@${prestito.mittente_id}> confermi?`, components: [row] });
         }
         
-        // CONFERMA/RIFIUTA PAGAMENTO
         if (interaction.isButton() && interaction.customId.startsWith('conferma_paga_')) {
             const parts = interaction.customId.split('_');
             const prestitoId = parts[2];
             const importo = parseFloat(parts[3]);
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-            
             if (interaction.user.id !== prestito.mittente_id) {
                 return safeReply(interaction, { content: '❌ Solo mittente!', ephemeral: true });
             }
-            
             calcolaIncrementi(prestito);
             const prestitoAggiornato = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-            
             let nuovoImporto;
             if (prestitoAggiornato.categoria === 'Soldi') {
                 nuovoImporto = prestitoAggiornato.importo_attuale - importo;
@@ -600,11 +528,9 @@ client.on('interactionCreate', async interaction => {
                 db.prepare('UPDATE prestiti SET valore_reale = ? WHERE id = ?').run(nuovoValoreReale, prestitoId);
                 nuovoImporto = nuovoValoreReale;
             }
-            
             if (nuovoImporto <= 0.01) {
                 db.prepare('UPDATE prestiti SET stato = ?, importo_attuale = 0 WHERE id = ?').run('completato', prestitoId);
                 await safeUpdate(interaction, { content: '✅ Completato! 🎉', components: [] });
-                
                 try {
                     const thread = await client.channels.fetch(prestito.thread_id);
                     const messages = await thread.messages.fetch({ limit: 1 });
@@ -619,9 +545,7 @@ client.on('interactionCreate', async interaction => {
                 if (prestitoAggiornato.categoria === 'Soldi') {
                     db.prepare('UPDATE prestiti SET importo_attuale = ? WHERE id = ?').run(nuovoImporto, prestitoId);
                 }
-                
-                await safeUpdate(interaction, { content: `✅ Nuovo saldo: ${formattaNumero(nuovoImporto)}`, components: [] });
-                
+                await safeUpdate(interaction, { content: `✅ Saldo: ${formattaNumero(nuovoImporto)}`, components: [] });
                 try {
                     const thread = await client.channels.fetch(prestito.thread_id);
                     const messages = await thread.messages.fetch({ limit: 1 });
@@ -637,47 +561,34 @@ client.on('interactionCreate', async interaction => {
         if (interaction.isButton() && interaction.customId.startsWith('rifiuta_paga_')) {
             const prestitoId = interaction.customId.split('_')[2];
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-            
             if (interaction.user.id !== prestito.mittente_id) {
                 return safeReply(interaction, { content: '❌ Solo mittente!', ephemeral: true });
             }
-            
             await safeUpdate(interaction, { content: '❌ Rifiutato.', components: [] });
         }
         
-        // COMPLETA PRESTITO
         if (interaction.isButton() && interaction.customId.startsWith('completa_')) {
             const prestitoId = interaction.customId.split('_')[1];
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-            
             if (!prestito) return safeReply(interaction, { content: '❌ Non trovato!', ephemeral: true });
             if (prestito.debitore_id !== 'unknown' && interaction.user.id !== prestito.debitore_id) {
                 return safeReply(interaction, { content: '❌ Solo debitore!', ephemeral: true });
             }
-            
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder().setCustomId(`conferma_completa_${prestitoId}`).setLabel('Conferma').setStyle(ButtonStyle.Success),
-                    new ButtonBuilder().setCustomId(`rifiuta_completa_${prestitoId}`).setLabel('Rifiuta').setStyle(ButtonStyle.Danger)
-                );
-            
-            await safeReply(interaction, { 
-                content: `✅ ${interaction.user} ha segnato pagato.\n<@${prestito.mittente_id}> confermi?`,
-                components: [row]
-            });
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`conferma_completa_${prestitoId}`).setLabel('Conferma').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId(`rifiuta_completa_${prestitoId}`).setLabel('Rifiuta').setStyle(ButtonStyle.Danger)
+            );
+            await safeReply(interaction, { content: `✅ ${interaction.user} segna pagato. <@${prestito.mittente_id}> confermi?`, components: [row] });
         }
         
         if (interaction.isButton() && interaction.customId.startsWith('conferma_completa_')) {
             const prestitoId = interaction.customId.split('_')[2];
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-            
             if (interaction.user.id !== prestito.mittente_id) {
                 return safeReply(interaction, { content: '❌ Solo mittente!', ephemeral: true });
             }
-            
             db.prepare('UPDATE prestiti SET stato = ?, importo_attuale = 0 WHERE id = ?').run('completato', prestitoId);
             await safeUpdate(interaction, { content: '✅ Completato! 🎉', components: [] });
-            
             try {
                 const thread = await client.channels.fetch(prestito.thread_id);
                 const messages = await thread.messages.fetch({ limit: 1 });
@@ -693,41 +604,43 @@ client.on('interactionCreate', async interaction => {
         if (interaction.isButton() && interaction.customId.startsWith('rifiuta_completa_')) {
             const prestitoId = interaction.customId.split('_')[2];
             const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-            
             if (interaction.user.id !== prestito.mittente_id) {
                 return safeReply(interaction, { content: '❌ Solo mittente!', ephemeral: true });
             }
-            
             await safeUpdate(interaction, { content: '❌ Rifiutato.', components: [] });
         }
         
     } catch (error) {
-        console.error('Errore interazione:', error.message);
+        console.error('Errore:', error.message);
         try {
-            const msg = '❌ Errore! Riprova.';
             if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({ content: msg, ephemeral: true });
+                await interaction.reply({ content: '❌ Errore!', ephemeral: true });
             } else {
-                await interaction.followUp({ content: msg, ephemeral: true });
+                await interaction.followUp({ content: '❌ Errore!', ephemeral: true });
             }
-        } catch (err) {
-            console.error('Impossibile rispondere:', err.message);
-        }
+        } catch (err) {}
     }
 });
 
 // Gestione errori globali
-process.on('unhandledRejection', (error) => {
-    console.error('❌ Unhandled rejection:', error);
-});
-
-process.on('uncaughtException', (error) => {
-    console.error('❌ Uncaught exception:', error);
+process.on('unhandledRejection', error => console.error('Unhandled:', error));
+process.on('uncaughtException', error => {
+    console.error('Uncaught:', error);
     process.exit(1);
 });
 
-// Login
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('SIGTERM ricevuto, chiusura...');
+    server.close(() => {
+        client.destroy();
+        db.close();
+        process.exit(0);
+    });
+});
+
+// Avvio bot
 client.login(CONFIG.TOKEN).catch(error => {
-    console.error('❌ Errore login:', error);
+    console.error('❌ Login fallito:', error);
     process.exit(1);
 });
