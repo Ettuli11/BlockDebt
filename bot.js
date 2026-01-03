@@ -1,4 +1,3 @@
-@ -0,0 +1,680 @@
 // BlockDebt - Bot Discord per gestione prestiti Minecraft
 // Requisiti: npm install discord.js better-sqlite3
 
@@ -8,7 +7,7 @@ const db = new Database('blockdebt.db');
 
 // ==================== CONFIGURAZIONE ====================
 const CONFIG = {
-    TOKEN: process.env.DISCORD_TOKEN
+    TOKEN: 'IL_TUO_TOKEN_QUI',
     PRESTITI_CHANNEL_ID: '1456768128880082995',
     HOLIDAYS: [] // Array di date in formato 'YYYY-MM-DD' per le festività
 };
@@ -355,95 +354,65 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply({ content: `✅ Prestito #${prestitoId} creato! Controlla il thread ${thread}`, ephemeral: true });
         }
         
-        // CHIUDI THREAD
         // RICHIESTA CONFERMA CHIUSURA PRESTITO
-if (interaction.isButton() && interaction.customId.startsWith('chiudi_')) {
-    const prestitoId = interaction.customId.split('_')[1];
-    const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
+        if (interaction.isButton() && interaction.customId.startsWith('chiudi_')) {
+            const prestitoId = interaction.customId.split('_')[1];
+            const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
 
-    if (!prestito) {
-        return interaction.reply({
-            content: '❌ Prestito non trovato!',
-            ephemeral: true
-        });
-    }
+            if (!prestito) {
+                return interaction.reply({ content: '❌ Prestito non trovato!', ephemeral: true });
+            }
 
-    if (interaction.user.id !== prestito.mittente_id) {
-        return interaction.reply({
-            content: '❌ Solo il mittente può chiudere il prestito.',
-            ephemeral: true
-        });
-    }
+            if (interaction.user.id !== prestito.mittente_id) {
+                return interaction.reply({ content: '❌ Solo il mittente può chiudere il prestito.', ephemeral: true });
+            }
 
-    const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId(`conferma_chiudi_${prestitoId}`)
-            .setLabel('Sì')
-            .setEmoji('✅')
-            .setStyle(ButtonStyle.Danger),
-        new ButtonBuilder()
-            .setCustomId(`annulla_chiudi_${prestitoId}`)
-            .setLabel('No')
-            .setEmoji('❌')
-            .setStyle(ButtonStyle.Secondary)
-    );
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`conferma_chiudi_${prestitoId}`).setLabel('Sì').setEmoji('✅').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId(`annulla_chiudi_${prestitoId}`).setLabel('No').setEmoji('❌').setStyle(ButtonStyle.Secondary)
+            );
 
-    await interaction.reply({
-        content: '⚠️ **Cliccando conferma chiuderai il prestito e non sarà più possibile accederci.**\nContinuare?',
-        components: [row],
-        ephemeral: true
-    });
-}
-
-// CONFERMA CHIUSURA PRESTITO
-if (interaction.isButton() && interaction.customId.startsWith('conferma_chiudi_')) {
-    const prestitoId = interaction.customId.split('_')[2];
-    const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
-
-    if (!prestito) {
-        return interaction.reply({
-            content: '❌ Prestito non trovato!',
-            ephemeral: true
-        });
-    }
-
-    if (interaction.user.id !== prestito.mittente_id) {
-        return interaction.reply({
-            content: '❌ Non autorizzato.',
-            ephemeral: true
-        });
-    }
-
-    db.prepare('UPDATE prestiti SET stato = ? WHERE id = ?')
-        .run('completato', prestitoId);
-
-    await interaction.update({
-        content: '🔒 Prestito chiuso con successo.',
-        components: []
-    });
-
-    try {
-        const thread = await client.channels.fetch(prestito.thread_id);
-        if (thread) {
-            await thread.setArchived(true);
-            setTimeout(async () => {
-                await thread.delete('Prestito chiuso dal mittente');
-            }, 3000);
+            await interaction.reply({
+                content: '⚠️ **Cliccando conferma chiuderai il prestito e non sarà più possibile accederci.**\nContinuare?',
+                components: [row],
+                ephemeral: true
+            });
         }
-    } catch (err) {
-        console.error(err);
-    }
-}
 
-// ANNULLA CHIUSURA PRESTITO
-if (interaction.isButton() && interaction.customId.startsWith('annulla_chiudi_')) {
-    await interaction.update({
-        content: '❎ Operazione annullata.',
-        components: []
-    });
-}
+        // CONFERMA CHIUSURA PRESTITO
+        if (interaction.isButton() && interaction.customId.startsWith('conferma_chiudi_')) {
+            const prestitoId = interaction.customId.split('_')[2];
+            const prestito = db.prepare('SELECT * FROM prestiti WHERE id = ?').get(prestitoId);
 
+            if (!prestito) {
+                return interaction.reply({ content: '❌ Prestito non trovato!', ephemeral: true });
+            }
 
+            if (interaction.user.id !== prestito.mittente_id) {
+                return interaction.reply({ content: '❌ Non autorizzato.', ephemeral: true });
+            }
+
+            db.prepare('UPDATE prestiti SET stato = ? WHERE id = ?').run('completato', prestitoId);
+
+            await interaction.update({ content: '🔒 Prestito chiuso con successo.', components: [] });
+
+            try {
+                const thread = await client.channels.fetch(prestito.thread_id);
+                if (thread) {
+                    await thread.setArchived(true);
+                    setTimeout(async () => {
+                        await thread.delete('Prestito chiuso dal mittente');
+                    }, 3000);
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        // ANNULLA CHIUSURA PRESTITO
+        if (interaction.isButton() && interaction.customId.startsWith('annulla_chiudi_')) {
+            await interaction.update({ content: '⏎ Operazione annullata.', components: [] });
+        }
         
         // ACCETTA PRESTITO
         if (interaction.isButton() && interaction.customId.startsWith('accetta_')) {
@@ -486,7 +455,7 @@ if (interaction.isButton() && interaction.customId.startsWith('annulla_chiudi_')
             await interaction.update({ embeds: [embed], components: [] });
             
             const mittente = await client.users.fetch(prestito.mittente_id);
-            await mittente.send(`Il Thread prestito-${prestitoId}-${prestito.debitore_nome}-${prestito.categoria.toLowerCase()} è stato declinato da ${prestito.debitore_nome}.`);
+            await mittente.send(`⚠️ Attenzione ⚠️ Il Thread prestito-${prestitoId}-${prestito.debitore_nome}-${prestito.categoria.toLowerCase()} è stato declinato ❌ da ${prestito.debitore_nome}.`);
             
             const thread = await client.channels.fetch(prestito.thread_id);
             await thread.setArchived(true);
