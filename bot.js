@@ -1,7 +1,6 @@
 // BlockDebt - Discord Loan Bot (REFactor completo, stabile, senza bug)
 // Node 18+, discord.js v14
 
-require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
